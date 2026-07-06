@@ -115,3 +115,18 @@ overshotz.com.br/
 - Zero dependências externas de runtime
 - V1 = seção de oferta original; V2 = nova seção de oferta
 - Alterações em V1 e V2 são sempre independentes
+
+## Staging workspace (preview de atualizações sem afetar o site ativo)
+
+```
+staging/
+  index.html          ← cópia editável da V2 para testes
+  assets/             ← link/cópia dos assets (compartilhados)
+staging_server.py     ← servidor de preview na porta 5001
+```
+
+**Como usar:**
+1. Edite `staging/index.html` (ou adicione arquivos em `staging/`)
+2. No Shell: `python3 staging_server.py`
+3. O preview abre em `http://localhost:5001`
+4. Quando aprovar: copie as alterações pra `v1/index.html` ou `v2/index.html` e envie via `python3 github_push.py files ...`
