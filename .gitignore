@@ -1,0 +1,13 @@
+*.zip
+__pycache__/
+*.pyc
+.cache/
+.pythonlibs/
+.local/
+.agents/
+attached_assets/
+127.0.0.1*/
+overshotz.com.br/
+github_push.py
+.replit
+replit.nix
