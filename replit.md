@@ -97,8 +97,15 @@ overshotz.com.br/
 
 - **Meta Pixel ID `1002705989178676`** instalado no `<head>` (antes de `</head>`) de **todas** as páginas: `index.html`, `v1/index.html`, `v2/index.html`
 - **Regra:** ao criar qualquer versão nova (v3, v4, ...), copiar o bloco `<!-- Meta Pixel Code -->` existente para o `<head>` da nova página antes de publicar
-- O bloco inclui: script `fbq('init', ...)` + `fbq('track', 'PageView')` + tag `<noscript>`
+- O bloco inclui: script `fbq('init', ...)` + `fbq('track', 'PageView', {}, {eventID})` + beacon pro `/capi` + tag `<noscript>`
 - Verificação rápida: `grep -c "fbq('init'" <arquivo>` deve retornar 1
+
+### API de Conversões (CAPI) — server.py
+
+- Endpoint `POST /capi`: navegador envia `event_id` gerado por pageview; servidor repassa ao Meta (`graph.facebook.com`) com IP, user-agent e cookies `_fbp`/`_fbc` — deduplicação via `eventID` idêntico nos dois canais
+- Token: secret `META_PIXEL_ACCESS_TOKEN` (Replit) — **precisa também ser adicionado como variável no Railway** para funcionar em produção; sem o token o servidor ignora o envio silenciosamente
+- Proteções: allowlist de origem (`overshotz.com.br`, `*.up.railway.app`, `*.replit.dev`, localhost), só evento `PageView`, rate limit 20/min por IP, máx. 16 envios simultâneos
+- Log de sucesso no servidor: `[CAPI] PageView enviado (events_received=1)`
 
 ## User preferences
 
