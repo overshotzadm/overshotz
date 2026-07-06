@@ -188,6 +188,20 @@ class OvershotzHandler(http.server.SimpleHTTPRequestHandler):
         decoded_path = unquote(self.path)
         path_no_qs   = decoded_path.split('?')[0].rstrip('/')
 
+        # Staging workspace preview (isolated from production routes)
+        if path_no_qs == '/__staging' or path_no_qs.startswith('/__staging/'):
+            staging_dir = os.path.join(BASE_DIR, 'staging')
+            staging_path = path_no_qs.replace('/__staging', '', 1)
+            if staging_path in ('', '/'):
+                self.serve_file(os.path.join(staging_dir, 'index.html'))
+                return
+            fs_path = os.path.normpath(os.path.join(staging_dir, staging_path.lstrip('/')))
+            if os.path.isfile(fs_path) and os.path.normpath(fs_path).startswith(staging_dir):
+                self.serve_file(fs_path)
+            else:
+                self.send_error(404, f'Staging file not found: {staging_path}')
+            return
+
         if path_no_qs in ('', '/v2'):
             self.serve_file(os.path.join(BASE_DIR, 'v2', 'index.html'))
             return
