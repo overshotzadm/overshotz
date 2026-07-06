@@ -1,0 +1,197 @@
+import gzip
+import hashlib
+import http.server
+import io
+import os
+import re
+import socketserver
+import sys
+from urllib.parse import unquote
+
+PORT = int(os.environ.get('PORT', 5000))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+MIME_TYPES = {
+    '.html':  'text/html; charset=utf-8',
+    '.css':   'text/css',
+    '.js':    'application/javascript',
+    '.json':  'application/json',
+    '.webp':  'image/webp',
+    '.png':   'image/png',
+    '.jpg':   'image/jpeg',
+    '.jpeg':  'image/jpeg',
+    '.gif':   'image/gif',
+    '.svg':   'image/svg+xml',
+    '.ico':   'image/x-icon',
+    '.woff':  'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf':   'font/ttf',
+    '.eot':   'application/vnd.ms-fontobject',
+    '.mp4':   'video/mp4',
+    '.webm':  'video/webm',
+    '.map':   'application/json',
+}
+
+GZIP_EXTS = {'.html', '.css', '.js', '.json', '.svg', '.map'}
+CACHE_LONG = 'public, max-age=31536000, immutable'
+CACHE_DAY  = 'public, max-age=86400'
+CACHE_NONE = 'no-cache, no-store, must-revalidate'
+
+_gzip_cache: dict = {}
+
+
+def gzip_compress(data: bytes) -> bytes:
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode='wb', compresslevel=6) as gz:
+        gz.write(data)
+    return buf.getvalue()
+
+
+def resolve_path(decoded_path):
+    if '?' in decoded_path:
+        qs_part   = decoded_path.split('?', 1)[1]
+        decoded_path = decoded_path.split('?', 1)[0]
+    else:
+        qs_part = ''
+
+    fs_path = os.path.normpath(os.path.join(BASE_DIR, decoded_path.lstrip('/')))
+
+    if os.path.isfile(fs_path):
+        return fs_path
+
+    decoded2 = unquote(fs_path)
+    if os.path.isfile(decoded2):
+        return decoded2
+
+    if qs_part and qs_part.startswith('ver='):
+        ver_val   = qs_part.split('ver=', 1)[1].split('&')[0]
+        ext_match = re.match(r'^(.*)(\.css|\.js)$', fs_path, re.IGNORECASE)
+        if ext_match:
+            base_no_ext = ext_match.group(1)
+            ext = ext_match.group(2)
+            for candidate in (
+                f"{base_no_ext}_ver={ver_val}{ext}",
+                f"{base_no_ext}_ver={ver_val}{ext}".replace('=', '-'),
+                f"{base_no_ext}_ver%3D{ver_val}{ext}",
+            ):
+                if os.path.isfile(candidate):
+                    return candidate
+
+    dirpath  = os.path.dirname(fs_path)
+    basename = os.path.basename(fs_path)
+    if os.path.isdir(dirpath):
+        name_no_ext, ext = os.path.splitext(basename)
+        for candidate in os.listdir(dirpath):
+            cand_path = os.path.join(dirpath, candidate)
+            if os.path.isfile(cand_path):
+                cand_base, cand_ext = os.path.splitext(candidate)
+                if cand_ext.lower() == ext.lower() and cand_base.startswith(name_no_ext):
+                    return cand_path
+
+    return None
+
+
+class OvershotzHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=BASE_DIR, **kwargs)
+
+    def do_GET(self):
+        decoded_path = unquote(self.path)
+        path_no_qs   = decoded_path.split('?')[0].rstrip('/')
+
+        if path_no_qs in ('', '/v2'):
+            self.serve_file(os.path.join(BASE_DIR, 'v2', 'index.html'))
+            return
+
+        if path_no_qs == '/v1':
+            self.serve_file(os.path.join(BASE_DIR, 'v1', 'index.html'))
+            return
+
+        if path_no_qs.startswith('/v1/') or path_no_qs.startswith('/v2/'):
+            suffix       = re.sub(r'^/v[12]', '', decoded_path)
+            decoded_path = suffix
+
+        fs_path = resolve_path(decoded_path)
+
+        if fs_path and os.path.isfile(fs_path):
+            if not os.path.normpath(fs_path).startswith(BASE_DIR):
+                self.send_error(403)
+                return
+            self.serve_file(fs_path)
+        else:
+            self.send_error(404, f'File not found: {decoded_path}')
+
+    def serve_file(self, fs_path):
+        try:
+            ext_match    = re.search(r'(\.[a-zA-Z0-9]+)$', os.path.basename(fs_path))
+            ext          = ext_match.group(1).lower() if ext_match else ''
+            content_type = MIME_TYPES.get(ext, 'application/octet-stream')
+
+            with open(fs_path, 'rb') as f:
+                raw = f.read()
+
+            etag = '"' + hashlib.md5(raw).hexdigest()[:16] + '"'
+            if self.headers.get('If-None-Match') == etag:
+                self.send_response(304)
+                self.end_headers()
+                return
+
+            if ext in ('.css', '.js', '.woff', '.woff2', '.ttf', '.eot'):
+                cache = CACHE_LONG
+            elif ext in ('.webp', '.jpg', '.jpeg', '.png', '.gif', '.svg', '.ico'):
+                cache = CACHE_DAY
+            else:
+                cache = CACHE_NONE
+
+            accept_enc = self.headers.get('Accept-Encoding', '')
+            use_gzip   = 'gzip' in accept_enc and ext in GZIP_EXTS
+
+            if use_gzip:
+                if fs_path not in _gzip_cache or _gzip_cache[fs_path][0] != etag:
+                    _gzip_cache[fs_path] = (etag, gzip_compress(raw))
+                body = _gzip_cache[fs_path][1]
+            else:
+                body = raw
+
+            self.send_response(200)
+            self.send_header('Content-Type',                content_type)
+            self.send_header('Content-Length',              str(len(body)))
+            self.send_header('Cache-Control',               cache)
+            self.send_header('ETag',                        etag)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Vary',                        'Accept-Encoding')
+            if use_gzip:
+                self.send_header('Content-Encoding', 'gzip')
+            self.end_headers()
+            self.wfile.write(body)
+
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def log_message(self, format, *args):
+        try:
+            if args and isinstance(args[0], str) and ' ' in args[0]:
+                path   = args[0].split()[1]
+                status = args[1] if len(args) > 1 else '?'
+                if str(status) not in ('200', '304'):
+                    print(f'[{status}] {path}')
+        except Exception:
+            pass
+
+
+class ReusableTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+
+if __name__ == '__main__':
+    with ReusableTCPServer(('0.0.0.0', PORT), OvershotzHandler) as httpd:
+        print(f'OverShotz LP  —  A/B Test Server on http://0.0.0.0:{PORT}')
+        print(f'  /     → V2 (nova seção de oferta)')
+        print(f'  /v1   → V1 (seção de oferta original)')
+        print(f'  /v2   → V2 (nova seção de oferta)')
+        print(f'  Gzip: ON  |  ETag: ON  |  Cache: imutable CSS/JS, 1d imgs, no-cache HTML')
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print('\nServer stopped.')
+            sys.exit(0)

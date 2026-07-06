@@ -1,0 +1,21 @@
+Options -Indexes
+
+# Correct MIME types for fonts and media
+AddType font/woff2 .woff2
+AddType font/woff .woff
+AddType font/ttf .ttf
+AddType font/eot .eot
+AddType image/webp .webp
+AddType image/svg+xml .svg
+AddType application/javascript .js
+AddType text/css .css
+
+# CORS for fonts (needed by some browsers)
+<FilesMatch "\.(woff|woff2|ttf|eot|svg)$">
+    Header set Access-Control-Allow-Origin "*"
+</FilesMatch>
+
+# Cache headers
+<FilesMatch "\.(css|js|woff|woff2|ttf|eot|webp|jpg|jpeg|png|gif|svg|ico)$">
+    Header set Cache-Control "max-age=86400, public"
+</FilesMatch>
