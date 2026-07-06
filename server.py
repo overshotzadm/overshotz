@@ -2,14 +2,67 @@ import gzip
 import hashlib
 import http.server
 import io
+import json
 import os
 import re
 import socketserver
 import sys
+import threading
+import time
+import urllib.request
 from urllib.parse import unquote
 
 PORT = int(os.environ.get('PORT', 5000))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+META_PIXEL_ID    = '1002705989178676'
+META_CAPI_TOKEN  = os.environ.get('META_PIXEL_ACCESS_TOKEN', '')
+META_CAPI_URL    = f'https://graph.facebook.com/v21.0/{META_PIXEL_ID}/events'
+ALLOWED_EVENTS   = {'PageView', 'ViewContent', 'InitiateCheckout', 'Lead', 'Purchase'}
+
+
+def send_capi_event(event_name, event_id, source_url, client_ip, user_agent, fbp, fbc):
+    """Envia evento à API de Conversões do Meta em background (não bloqueia resposta)."""
+    if not META_CAPI_TOKEN:
+        return
+    user_data = {
+        'client_ip_address': client_ip,
+        'client_user_agent': user_agent,
+    }
+    if fbp:
+        user_data['fbp'] = fbp
+    if fbc:
+        user_data['fbc'] = fbc
+    payload = {
+        'data': [{
+            'event_name':       event_name,
+            'event_time':       int(time.time()),
+            'event_id':         event_id,
+            'event_source_url': source_url,
+            'action_source':    'website',
+            'user_data':        user_data,
+        }],
+        'access_token': META_CAPI_TOKEN,
+    }
+    try:
+        req = urllib.request.Request(
+            META_CAPI_URL,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode('utf-8'))
+            received = body.get('events_received', 0)
+            print(f'[CAPI] {event_name} enviado (events_received={received})')
+    except Exception as e:
+        detail = ''
+        if hasattr(e, 'read'):
+            try:
+                detail = e.read().decode('utf-8')[:200]
+            except Exception:
+                pass
+        print(f'[CAPI] ERRO ao enviar {event_name}: {e} {detail}')
 
 MIME_TYPES = {
     '.html':  'text/html; charset=utf-8',
@@ -120,6 +173,39 @@ class OvershotzHandler(http.server.SimpleHTTPRequestHandler):
             self.serve_file(fs_path)
         else:
             self.send_error(404, f'File not found: {decoded_path}')
+
+    def do_POST(self):
+        path_no_qs = unquote(self.path).split('?')[0].rstrip('/')
+        if path_no_qs != '/capi':
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            if length <= 0 or length > 4096:
+                self.send_error(400)
+                return
+            data = json.loads(self.rfile.read(length).decode('utf-8'))
+            event_name = data.get('event_name', '')
+            event_id   = str(data.get('event_id', ''))[:80]
+            source_url = str(data.get('event_source_url', ''))[:500]
+            fbp        = str(data.get('fbp', ''))[:100]
+            fbc        = str(data.get('fbc', ''))[:200]
+            if event_name not in ALLOWED_EVENTS or not event_id:
+                self.send_error(400)
+                return
+            xff = self.headers.get('X-Forwarded-For', '')
+            client_ip  = xff.split(',')[0].strip() if xff else self.client_address[0]
+            user_agent = self.headers.get('User-Agent', '')
+            threading.Thread(
+                target=send_capi_event,
+                args=(event_name, event_id, source_url, client_ip, user_agent, fbp, fbc),
+                daemon=True,
+            ).start()
+            self.send_response(204)
+            self.send_header('Cache-Control', CACHE_NONE)
+            self.end_headers()
+        except Exception:
+            self.send_error(400)
 
     def serve_file(self, fs_path):
         try:
