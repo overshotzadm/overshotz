@@ -18,7 +18,43 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 META_PIXEL_ID    = '1002705989178676'
 META_CAPI_TOKEN  = os.environ.get('META_PIXEL_ACCESS_TOKEN', '')
 META_CAPI_URL    = f'https://graph.facebook.com/v21.0/{META_PIXEL_ID}/events'
-ALLOWED_EVENTS   = {'PageView', 'ViewContent', 'InitiateCheckout', 'Lead', 'Purchase'}
+ALLOWED_EVENTS   = {'PageView'}
+
+_capi_semaphore  = threading.BoundedSemaphore(16)
+_rate_lock       = threading.Lock()
+_rate_buckets: dict = {}
+RATE_MAX_PER_MIN = 20
+
+
+def host_allowed(host: str) -> bool:
+    """Aceita apenas hosts do próprio site (produção, Railway e dev)."""
+    if not host:
+        return False
+    host = host.lower().split(':')[0]
+    if host in ('localhost', '127.0.0.1'):
+        return True
+    if host == 'overshotz.com.br' or host.endswith('.overshotz.com.br'):
+        return True
+    if host.endswith('.up.railway.app'):
+        return True
+    if host.endswith('.replit.dev') or host.endswith('.repl.co'):
+        return True
+    return False
+
+
+def rate_ok(ip: str) -> bool:
+    now = time.time()
+    with _rate_lock:
+        if len(_rate_buckets) > 10000:
+            _rate_buckets.clear()
+        bucket = _rate_buckets.get(ip)
+        if not bucket or now - bucket[0] > 60:
+            _rate_buckets[ip] = [now, 1]
+            return True
+        if bucket[1] >= RATE_MAX_PER_MIN:
+            return False
+        bucket[1] += 1
+        return True
 
 
 def send_capi_event(event_name, event_id, source_url, client_ip, user_agent, fbp, fbc):
@@ -180,6 +216,18 @@ class OvershotzHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
             return
         try:
+            origin = self.headers.get('Origin', '') or self.headers.get('Referer', '')
+            origin_host = re.sub(r'^https?://', '', origin).split('/')[0]
+            if not host_allowed(origin_host):
+                self.send_error(403)
+                return
+
+            xff = self.headers.get('X-Forwarded-For', '')
+            client_ip = xff.split(',')[0].strip() if xff else self.client_address[0]
+            if not rate_ok(client_ip):
+                self.send_error(429)
+                return
+
             length = int(self.headers.get('Content-Length', 0))
             if length <= 0 or length > 4096:
                 self.send_error(400)
@@ -193,14 +241,21 @@ class OvershotzHandler(http.server.SimpleHTTPRequestHandler):
             if event_name not in ALLOWED_EVENTS or not event_id:
                 self.send_error(400)
                 return
-            xff = self.headers.get('X-Forwarded-For', '')
-            client_ip  = xff.split(',')[0].strip() if xff else self.client_address[0]
+            src_host = re.sub(r'^https?://', '', source_url).split('/')[0]
+            if not host_allowed(src_host):
+                self.send_error(400)
+                return
+
             user_agent = self.headers.get('User-Agent', '')
-            threading.Thread(
-                target=send_capi_event,
-                args=(event_name, event_id, source_url, client_ip, user_agent, fbp, fbc),
-                daemon=True,
-            ).start()
+            if _capi_semaphore.acquire(blocking=False):
+                def _send_and_release():
+                    try:
+                        send_capi_event(event_name, event_id, source_url,
+                                        client_ip, user_agent, fbp, fbc)
+                    finally:
+                        _capi_semaphore.release()
+                threading.Thread(target=_send_and_release, daemon=True).start()
+
             self.send_response(204)
             self.send_header('Cache-Control', CACHE_NONE)
             self.end_headers()
