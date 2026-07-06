@@ -73,6 +73,33 @@ overshotz.com.br/
 - Imagens: `max-age=86400` (1 dia)
 - HTML: `no-cache`
 
+## Deploy — GitHub + Hostinger (CI/CD)
+
+- Hostinger hPanel → **Avançado → GIT**: conecta o repo público e faz deploy no diretório escolhido (ex.: `public_html/lp1`)
+- Webhook do GitHub dispara auto-deploy a cada commit no `main`
+- Site roda 100% estático no Apache: o `.htaccess` faz o roteamento A/B (`/` → v2, `/v1` → v1, `/v2` → v2) e mapeia `v1|v2/assets/` para a pasta compartilhada `assets/`
+- CSS é inline no HTML; JS referenciado por nome exato de arquivo — sem dependência do `server.py` em produção
+
+## Deploy alternativo — Railway
+
+- Repositório: `https://github.com/overshotzadm/overshotz-lp` (branch `main`)
+- Token: secret `GITHUB_PERSONAL_ACCESS_TOKEN`
+- **Push via API do GitHub** (git CLI é bloqueado pela sandbox do Replit):
+  - Push completo: `python3 github_push.py blobs` → `python3 github_push.py commit`
+  - Push incremental (arquivos específicos): `python3 github_push.py files <arq1> <arq2> ...`
+- Railway monitora o branch `main` → todo commit dispara redeploy automático
+- Config Railway: `railway.json` (start: `python3 server.py`) + `Procfile`
+- `server.py` usa `PORT` do ambiente (Railway injeta automaticamente)
+- ZIPs, `github_push.py` e pastas do Replit ficam fora do repo (`.gitignore`)
+- **Regra:** ao criar arquivo novo na raiz, adicionar em `INCLUDE_PATHS` no `github_push.py` OU enviar via `python3 github_push.py files <arquivo>` (o push completo só cobre a allowlist + `assets/`)
+
+## Rastreamento (obrigatório em TODAS as versões)
+
+- **Meta Pixel ID `1002705989178676`** instalado no `<head>` (antes de `</head>`) de **todas** as páginas: `index.html`, `v1/index.html`, `v2/index.html`
+- **Regra:** ao criar qualquer versão nova (v3, v4, ...), copiar o bloco `<!-- Meta Pixel Code -->` existente para o `<head>` da nova página antes de publicar
+- O bloco inclui: script `fbq('init', ...)` + `fbq('track', 'PageView')` + tag `<noscript>`
+- Verificação rápida: `grep -c "fbq('init'" <arquivo>` deve retornar 1
+
 ## User preferences
 
 - Preservar fidelidade visual ao original (HTML do site ao vivo como fonte de verdade)
