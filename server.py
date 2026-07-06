@@ -202,6 +202,14 @@ class OvershotzHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(404, f'Staging file not found: {staging_path}')
             return
 
+        if path_no_qs == '/robots.txt':
+            self.serve_file(os.path.join(BASE_DIR, 'robots.txt'))
+            return
+
+        if path_no_qs == '/sitemap.xml':
+            self.serve_file(os.path.join(BASE_DIR, 'sitemap.xml'))
+            return
+
         if path_no_qs in ('', '/v2'):
             self.serve_file(os.path.join(BASE_DIR, 'v2', 'index.html'))
             return
