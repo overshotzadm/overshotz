@@ -188,11 +188,11 @@ class OvershotzHandler(http.server.SimpleHTTPRequestHandler):
         decoded_path = unquote(self.path)
         path_no_qs   = decoded_path.split('?')[0].rstrip('/')
 
-        # Redirect non-www to www (301 permanent)
+        # Redirect www to non-www (301 permanent)
         host = self.headers.get('Host', '').split(':')[0].lower()
-        if host == 'overshotz.com.br':
+        if host == 'www.overshotz.com.br':
             self.send_response(301)
-            self.send_header('Location', f'https://www.overshotz.com.br{decoded_path}')
+            self.send_header('Location', f'https://overshotz.com.br{decoded_path}')
             self.send_header('Cache-Control', 'max-age=86400')
             self.end_headers()
             return
